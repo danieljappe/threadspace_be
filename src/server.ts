@@ -95,8 +95,8 @@ async function startServer() {
       console.log('[SSE Backend] ✓ Connected message written, response writable:', !res.writableEnded && !res.destroyed);
       
       // Flush the response to ensure it's sent immediately
-      if (typeof res.flush === 'function') {
-        res.flush();
+      if (typeof (res as any).flush === 'function') {
+        (res as any).flush();
         console.log('[SSE Backend] Response flushed');
       }
 
@@ -146,8 +146,8 @@ async function startServer() {
               res.write(message);
               console.log('[SSE Backend] ✓ Vote update written successfully');
               // Flush to ensure immediate delivery
-              if (typeof res.flush === 'function') {
-                res.flush();
+              if (typeof (res as any).flush === 'function') {
+                (res as any).flush();
               }
             } catch (writeError) {
               console.error('[SSE Backend] ✗ Error writing vote update:', writeError);
@@ -221,8 +221,8 @@ async function startServer() {
               res.write(message);
               console.log('[SSE Backend] ✓ Comment added written successfully');
               // Flush to ensure immediate delivery
-              if (typeof res.flush === 'function') {
-                res.flush();
+              if (typeof (res as any).flush === 'function') {
+                (res as any).flush();
               }
             } catch (writeError) {
               console.error('[SSE Backend] ✗ Error writing comment update:', writeError);
@@ -274,8 +274,8 @@ async function startServer() {
               res.write(message);
               console.log('[SSE Backend] ✓ Comment deleted written successfully');
               // Flush to ensure immediate delivery
-              if (typeof res.flush === 'function') {
-                res.flush();
+              if (typeof (res as any).flush === 'function') {
+                (res as any).flush();
               }
             } catch (writeError) {
               console.error('[SSE Backend] ✗ Error writing comment deleted update:', writeError);
