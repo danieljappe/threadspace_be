@@ -2,8 +2,6 @@ import express from 'express';
 import { ApolloServer } from 'apollo-server-express';
 import { createServer } from 'http';
 import { makeExecutableSchema } from '@graphql-tools/schema';
-import { WebSocketServer } from 'ws';
-import { makeServer } from 'graphql-ws';
 import { PubSub } from 'graphql-subscriptions';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -377,49 +375,8 @@ async function startServer() {
     // Create HTTP server
     const httpServer = createServer(app);
 
-    // Create WebSocket server
-    const wsServer = new WebSocketServer({
-      server: httpServer,
-      path: '/graphql',
-    });
-
-    // Set up GraphQL WebSocket server
-    const graphqlWsServer = makeServer({
-      schema,
-      context: async (ctx: any) => {
-        // Extract user from connection params or headers
-        const token = ctx.connectionParams?.authorization || ctx.connectionParams?.token;
-        if (token) {
-          try {
-            // Parse JWT token and get user info
-            const { AuthService } = await import('./config/auth');
-            const user = AuthService.verifyAccessToken(token);
-            if (user) {
-              return createContext({ user }, null);
-            }
-          } catch (error) {
-            logger.warn('Invalid token in WebSocket connection:', error);
-          }
-        }
-        return createContext({ user: null }, null);
-      },
-      onConnect: (ctx: any) => {
-        logger.info('WebSocket client connected');
-      },
-      onDisconnect: (ctx: any, code: any, reason: any) => {
-        logger.info('WebSocket client disconnected:', { code, reason });
-      },
-      onError: (ctx: any, msg: any, errors: any) => {
-        logger.error('WebSocket error:', { msg, errors });
-      },
-    });
-
-    // Start the WebSocket server
-    wsServer.on('connection', (socket, request) => {
-      // Handle the WebSocket connection with graphql-ws
-      // For now, we'll use a simple approach
-      logger.info('WebSocket connection established');
-    });
+    // Note: Real-time updates are handled via SSE (Server-Sent Events) at /api/posts/:postId/events
+    // WebSocket subscriptions have been removed in favor of SSE for simpler deployment
 
     // Start server
     await new Promise<void>((resolve) => {
@@ -427,7 +384,7 @@ async function startServer() {
         logger.info(`🚀 Server ready at http://localhost:${PORT}`);
         logger.info(`📊 GraphQL endpoint: http://localhost:${PORT}/graphql`);
         logger.info(`🔍 Apollo Sandbox: http://localhost:${PORT}/graphql`);
-        logger.info(`🔌 WebSocket endpoint: ws://localhost:${PORT}/graphql`);
+        logger.info(`📡 SSE endpoint: http://localhost:${PORT}/api/posts/:postId/events`);
         logger.info(`❤️  Health check: http://localhost:${PORT}/health`);
         resolve();
       });
