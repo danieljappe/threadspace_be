@@ -33,6 +33,7 @@ async function startServer() {
       origin: [
         process.env.FRONTEND_URL || 'http://localhost:3000',
         'http://localhost:3000',
+        'http://localhost:3001',
         'http://localhost:8080',
         'https://studio.apollographql.com', // Apollo Sandbox
         'https://apollo-studio-embed.herokuapp.com', // Apollo Studio
@@ -363,6 +364,8 @@ async function startServer() {
       cors: {
         origin: [
           process.env.FRONTEND_URL || 'http://localhost:3000',
+          'http://localhost:3000',
+          'http://localhost:3001',
           'https://studio.apollographql.com', // Apollo Sandbox
           'https://apollo-studio-embed.herokuapp.com', // Apollo Studio
         ],
