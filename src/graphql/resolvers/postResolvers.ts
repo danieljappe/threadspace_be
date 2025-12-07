@@ -391,6 +391,173 @@ export const postResolvers = {
         logger.error('Error fetching trending posts:', error);
         throw error;
       }
+    },
+
+    /**
+     * Get user's bookmarked posts with cursor-based pagination
+     */
+    bookmarkedPosts: async (
+      parent: any,
+      {
+        first = 10,
+        after,
+        orderBy = 'NEWEST'
+      }: {
+        first?: number;
+        after?: string;
+        orderBy?: 'NEWEST' | 'OLDEST' | 'TOP';
+      },
+      context: GraphQLContext
+    ) => {
+      if (!context.user) {
+        throw new AuthenticationError('You must be logged in to view bookmarks');
+      }
+
+      try {
+        const startTime = Date.now();
+        const limit = Math.min(Math.max(first || 10, 1), 50);
+
+        let cursor: Date | null = null;
+        if (after) {
+          cursor = new Date(after);
+          if (isNaN(cursor.getTime())) {
+            throw new ValidationError('Invalid cursor format. Expected ISO timestamp.');
+          }
+        }
+
+        const bookmarkWhere: any = {
+          userId: context.user.userId,
+        };
+
+        if (cursor) {
+          bookmarkWhere.createdAt = { lt: cursor };
+        }
+
+        // Determine order - bookmarks are ordered by when they were saved
+        const orderByClause = orderBy === 'OLDEST' 
+          ? { createdAt: 'asc' as const }
+          : { createdAt: 'desc' as const };
+
+        const bookmarks = await prisma.bookmark.findMany({
+          where: bookmarkWhere,
+          orderBy: orderByClause,
+          take: limit + 1,
+          include: {
+            posts: {
+              include: {
+                users: {
+                  select: {
+                    id: true,
+                    username: true,
+                    email: true,
+                    avatarUrl: true,
+                    reputation: true,
+                    isVerified: true
+                  }
+                },
+                post_topics: {
+                  include: {
+                    topics: {
+                      select: {
+                        id: true,
+                        name: true,
+                        slug: true,
+                        description: true,
+                        color: true
+                      }
+                    }
+                  }
+                },
+                _count: {
+                  select: {
+                    comments: true
+                  }
+                }
+              }
+            }
+          }
+        });
+
+        // Filter out bookmarks where the post was deleted
+        const validBookmarks = bookmarks.filter(
+          (bookmark: any) => bookmark.posts && bookmark.posts.deletedAt === null
+        );
+
+        const hasNextPage = validBookmarks.length > limit;
+        if (hasNextPage) {
+          validBookmarks.pop();
+        }
+
+        const totalCount = await prisma.bookmark.count({
+          where: {
+            userId: context.user.userId,
+            posts: {
+              deletedAt: null
+            }
+          }
+        });
+
+        const postIds = validBookmarks.map((bookmark: any) => bookmark.posts.id);
+        const allVotes = await prisma.vote.findMany({
+          where: {
+            votableId: { in: postIds },
+            votableType: 'post'
+          }
+        });
+
+        // Build edges - each edge contains a node (the post) and a cursor for pagination
+        const edges = validBookmarks.map((bookmark: any) => {
+          const post = bookmark.posts;
+          const postVotes = allVotes.filter((v: any) => v.votableId === post.id);
+
+          return {
+            node: {
+              id: post.id,
+              title: post.title,
+              content: post.content,
+              threadType: post.threadType,
+              views: post.views,
+              isPinned: post.isPinned,
+              isLocked: post.isLocked,
+              createdAt: post.createdAt,
+              updatedAt: post.updatedAt,
+              author: post.users,
+              topics: post.post_topics.map((pt: any) => pt.topics),
+              voteCount: calculateVoteCount(postVotes),
+              userVote: getUserVote(postVotes, context.user!.userId),
+              bookmarked: true,
+              commentCount: post._count.comments
+            },
+            cursor: bookmark.createdAt?.toISOString() ?? new Date().toISOString()
+          };
+        });
+
+        const pageInfo = {
+          hasNextPage,
+          hasPreviousPage: !!after,
+          startCursor: edges[0]?.cursor || null,
+          endCursor: edges[edges.length - 1]?.cursor || null
+        };
+
+        const duration = Date.now() - startTime;
+        logger.info('Bookmarked posts query executed', {
+          duration,
+          count: edges.length,
+          hasNextPage,
+          totalCount,
+          userId: context.user.userId
+        });
+
+        return {
+          edges,
+          pageInfo,
+          totalCount
+        };
+
+      } catch (error) {
+        logger.error('Error fetching bookmarked posts:', error);
+        throw error;
+      }
     }
   },
 

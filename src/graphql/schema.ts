@@ -220,6 +220,7 @@ export const typeDefs = gql`
       after: String
     ): PostConnection!
     trendingPosts(first: Int!): [Post!]!
+    bookmarkedPosts(first: Int, after: String, orderBy: PostOrder): PostConnection!
     
     # Topic queries
     topic(id: ID!): Topic
