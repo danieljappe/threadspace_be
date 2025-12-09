@@ -10,7 +10,7 @@ import {
   AuthorizationError
 } from './utils';
 import { DataLoaderContext } from './dataloaders';
-import { publishPostCreated, publishPostUpdated } from './subscriptionResolvers';
+import { publishPostCreated } from './subscriptionResolvers';
 
 export interface GraphQLContext {
   user?: {
@@ -34,12 +34,6 @@ export const postResolvers = {
           throw new NotFoundError('Post not found');
         }
 
-        // Increment view count
-        await prisma.post.update({
-          where: { id },
-          data: { views: { increment: 1 } }
-        });
-
         // Get votes for this post
         const votes = await prisma.vote.findMany({
           where: {
@@ -57,14 +51,9 @@ export const postResolvers = {
           id: post.id,
           title: post.title,
           content: post.content,
-          threadType: post.threadType,
-          views: (post.views ?? 0) + 1,
-          isPinned: post.isPinned,
-          isLocked: post.isLocked,
           createdAt: post.createdAt,
           updatedAt: post.updatedAt,
           authorId: post.authorId,
-          topics: [],
           voteCount: calculateVoteCount(votes),
           userVote: context.user ? getUserVote(votes, context.user.userId) : null,
           bookmarked: context.user ? isPostBookmarked(bookmarks, context.user.userId) : false
@@ -77,24 +66,15 @@ export const postResolvers = {
 
     /**
      * Get posts with cursor-based pagination (INFINITE SCROLL)
-     * 
-     * This implements efficient cursor-based pagination for infinite scroll.
-     * Uses ISO timestamp cursors instead of offset-based pagination.
      */
     posts: async (
       parent: any,
       { 
-        topicId, 
-        authorId, 
-        search, 
         orderBy = 'NEWEST', 
         first = 10, 
         after 
       }: {
-        topicId?: string;
-        authorId?: string;
-        search?: string;
-        orderBy?: 'NEWEST' | 'OLDEST' | 'TRENDING' | 'TOP';
+        orderBy?: 'NEWEST' | 'OLDEST' | 'TOP';
         first?: number;
         after?: string;
       },
@@ -115,7 +95,7 @@ export const postResolvers = {
           }
         }
 
-        // Build WHERE clause - use deletedAt: null instead of isActive
+        // Build WHERE clause
         const where: any = {
           deletedAt: null
         };
@@ -125,39 +105,12 @@ export const postResolvers = {
           where.createdAt = { lt: cursor };
         }
 
-        // Add topic filter
-        if (topicId) {
-          where.post_topics = {
-            some: { topicId }
-          };
-        }
-
-        // Add author filter
-        if (authorId) {
-          where.authorId = authorId;
-        }
-
-        // Add full-text search
-        if (search) {
-          where.OR = [
-            { title: { contains: search, mode: 'insensitive' } },
-            { content: { contains: search, mode: 'insensitive' } }
-          ];
-        }
-
-        // Build ORDER BY clause - use available fields only
+        // Build ORDER BY clause
         let orderByClause: any = { createdAt: 'desc' };
         
         switch (orderBy) {
           case 'OLDEST':
             orderByClause = { createdAt: 'asc' };
-            break;
-          case 'TRENDING':
-            // Trending = high views in recent posts
-            orderByClause = [
-              { views: 'desc' },
-              { createdAt: 'desc' }
-            ];
             break;
           case 'TOP':
             orderByClause = { views: 'desc' };
@@ -171,7 +124,7 @@ export const postResolvers = {
         const posts = await prisma.post.findMany({
           where,
           orderBy: orderByClause,
-          take: limit + 1, // Fetch one extra
+          take: limit + 1,
           include: {
             users: {
               select: {
@@ -181,19 +134,6 @@ export const postResolvers = {
                 avatarUrl: true,
                 reputation: true,
                 isVerified: true
-              }
-            },
-            post_topics: {
-              include: {
-                topics: {
-                  select: {
-                    id: true,
-                    name: true,
-                    slug: true,
-                    description: true,
-                    color: true
-                  }
-                }
               }
             },
             _count: {
@@ -207,7 +147,7 @@ export const postResolvers = {
         // Determine if there are more posts
         const hasNextPage = posts.length > limit;
         if (hasNextPage) {
-          posts.pop(); // Remove the extra post
+          posts.pop();
         }
 
         // Get total count
@@ -232,7 +172,6 @@ export const postResolvers = {
 
         // Build edges with vote and bookmark data
         const edges = posts.map((post: any) => {
-          // Get votes for this post
           const postVotes = allVotes.filter((v: any) => v.votableId === post.id);
           
           return {
@@ -240,14 +179,9 @@ export const postResolvers = {
               id: post.id,
               title: post.title,
               content: post.content,
-              threadType: post.threadType,
-              views: post.views,
-              isPinned: post.isPinned,
-              isLocked: post.isLocked,
               createdAt: post.createdAt,
               updatedAt: post.updatedAt,
               author: post.users,
-              topics: post.post_topics.map((pt: any) => pt.topics),
               voteCount: calculateVoteCount(postVotes),
               userVote: context.user ? getUserVote(postVotes, context.user.userId) : null,
               bookmarked: context.user ? isPostBookmarked(allBookmarks, context.user.userId) : false,
@@ -265,14 +199,12 @@ export const postResolvers = {
           endCursor: edges[edges.length - 1]?.cursor || null
         };
 
-        // Build result
         const result = {
           edges,
           pageInfo,
           totalCount
         };
 
-        // Log query performance
         const duration = Date.now() - startTime;
         logger.info('Posts query executed', {
           duration,
@@ -282,113 +214,10 @@ export const postResolvers = {
           orderBy
         });
 
-        // Warn if query is slow
-        if (duration > 500) {
-          logger.warn('Slow posts query detected', {
-            duration,
-            args: { topicId, authorId, search, orderBy, first, after },
-            userId: context.user?.userId
-          });
-        }
-
         return result;
 
       } catch (error) {
         logger.error('Error fetching posts:', error);
-        throw error;
-      }
-    },
-
-    /**
-     * Get trending posts
-     */
-    trendingPosts: async (
-      parent: any,
-      { first = 10 }: { first: number },
-      context: GraphQLContext
-    ) => {
-      const limit = Math.min(first, 20);
-
-      try {
-        // Fetch trending posts from last 7 days
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-        const posts = await prisma.post.findMany({
-          where: {
-            deletedAt: null,
-            createdAt: { gte: sevenDaysAgo }
-          },
-          orderBy: [
-            { views: 'desc' },
-            { createdAt: 'desc' }
-          ],
-          take: limit,
-          include: {
-            users: {
-              select: {
-                id: true,
-                username: true,
-                avatarUrl: true,
-                reputation: true,
-                isVerified: true
-              }
-            },
-            post_topics: {
-              include: {
-                topics: true
-              }
-            },
-            _count: {
-              select: {
-                comments: true
-              }
-            }
-          }
-        });
-
-        // Get votes for all posts
-        const postIds = posts.map((p: any) => p.id);
-        const allVotes = await prisma.vote.findMany({
-          where: {
-            votableId: { in: postIds },
-            votableType: 'post'
-          }
-        });
-
-        const allBookmarks = context.user ? await prisma.bookmark.findMany({
-          where: {
-            postId: { in: postIds },
-            userId: context.user.userId
-          }
-        }) : [];
-
-        const result = posts.map((post: any) => {
-          const postVotes = allVotes.filter((v: any) => v.votableId === post.id);
-          
-          return {
-            id: post.id,
-            title: post.title,
-            content: post.content,
-            threadType: post.threadType,
-            views: post.views,
-            isPinned: post.isPinned,
-            isLocked: post.isLocked,
-            createdAt: post.createdAt,
-            updatedAt: post.updatedAt,
-            author: post.users,
-            topics: post.post_topics.map((pt: any) => pt.topics),
-            voteCount: calculateVoteCount(postVotes),
-            userVote: context.user ? getUserVote(postVotes, context.user.userId) : null,
-            bookmarked: context.user ? isPostBookmarked(allBookmarks, context.user.userId) : false,
-            commentCount: post._count.comments
-          };
-        });
-
-        return result;
-
-      } catch (error) {
-        logger.error('Error fetching trending posts:', error);
         throw error;
       }
     },
@@ -433,7 +262,6 @@ export const postResolvers = {
           bookmarkWhere.createdAt = { lt: cursor };
         }
 
-        // Determine order - bookmarks are ordered by when they were saved
         const orderByClause = orderBy === 'OLDEST' 
           ? { createdAt: 'asc' as const }
           : { createdAt: 'desc' as const };
@@ -453,19 +281,6 @@ export const postResolvers = {
                     avatarUrl: true,
                     reputation: true,
                     isVerified: true
-                  }
-                },
-                post_topics: {
-                  include: {
-                    topics: {
-                      select: {
-                        id: true,
-                        name: true,
-                        slug: true,
-                        description: true,
-                        color: true
-                      }
-                    }
                   }
                 },
                 _count: {
@@ -505,7 +320,6 @@ export const postResolvers = {
           }
         });
 
-        // Build edges - each edge contains a node (the post) and a cursor for pagination
         const edges = validBookmarks.map((bookmark: any) => {
           const post = bookmark.posts;
           const postVotes = allVotes.filter((v: any) => v.votableId === post.id);
@@ -515,14 +329,9 @@ export const postResolvers = {
               id: post.id,
               title: post.title,
               content: post.content,
-              threadType: post.threadType,
-              views: post.views,
-              isPinned: post.isPinned,
-              isLocked: post.isLocked,
               createdAt: post.createdAt,
               updatedAt: post.updatedAt,
               author: post.users,
-              topics: post.post_topics.map((pt: any) => pt.topics),
               voteCount: calculateVoteCount(postVotes),
               userVote: getUserVote(postVotes, context.user!.userId),
               bookmarked: true,
@@ -567,7 +376,7 @@ export const postResolvers = {
      */
     createPost: async (
       parent: any,
-      { input }: { input: any },
+      { input }: { input: { title: string; content: string } },
       context: GraphQLContext
     ) => {
       if (!context.user) {
@@ -575,7 +384,7 @@ export const postResolvers = {
       }
 
       try {
-        const { title, content, threadType = 'DISCUSSION', topicIds = [] } = input;
+        const { title, content } = input;
 
         // Validate input
         if (!title || title.trim().length === 0) {
@@ -593,13 +402,8 @@ export const postResolvers = {
           data: {
             title: title.trim(),
             content: content.trim(),
-            threadType,
-            authorId: context.user.userId,
-            post_topics: {
-              create: topicIds.map((topicId: string) => ({
-                topicId
-              }))
-            }
+            threadType: 'DISCUSSION',
+            authorId: context.user.userId
           },
           include: {
             users: {
@@ -610,11 +414,6 @@ export const postResolvers = {
                 reputation: true,
                 isVerified: true
               }
-            },
-            post_topics: {
-              include: {
-                topics: true
-              }
             }
           }
         });
@@ -623,7 +422,6 @@ export const postResolvers = {
         publishPostCreated({
           ...post,
           author: post.users,
-          topics: post.post_topics.map((pt: any) => pt.topics),
           voteCount: 0,
           userVote: null,
           bookmarked: false,
@@ -638,7 +436,6 @@ export const postResolvers = {
         return {
           ...post,
           author: post.users,
-          topics: post.post_topics.map((pt: any) => pt.topics),
           voteCount: 0,
           userVote: null,
           bookmarked: false,
@@ -647,124 +444,6 @@ export const postResolvers = {
 
       } catch (error) {
         logger.error('Error creating post:', error);
-        throw error;
-      }
-    },
-
-    /**
-     * Update a post
-     */
-    updatePost: async (
-      parent: any,
-      { id, input }: { id: string; input: any },
-      context: GraphQLContext
-    ) => {
-      if (!context.user) {
-        throw new AuthenticationError('You must be logged in to update a post');
-      }
-
-      try {
-        // Check if post exists and user is author
-        const existingPost = await prisma.post.findUnique({
-          where: { id }
-        });
-
-        if (!existingPost) {
-          throw new NotFoundError('Post not found');
-        }
-
-        if (existingPost.authorId !== context.user.userId && !context.user.isAdmin) {
-          throw new AuthorizationError('You can only update your own posts');
-        }
-
-        const { title, content, threadType, topicIds } = input;
-
-        // Validate input
-        if (title && title.length > 300) {
-          throw new ValidationError('Post title must be less than 300 characters');
-        }
-
-        // Update post
-        const updateData: any = {};
-        if (title !== undefined) updateData.title = title.trim();
-        if (content !== undefined) updateData.content = content.trim();
-        if (threadType !== undefined) updateData.threadType = threadType;
-
-        // Update topics if provided
-        if (topicIds !== undefined) {
-          // Delete existing topics
-          await prisma.postTopic.deleteMany({
-            where: { postId: id }
-          });
-
-          // Create new topics
-          updateData.post_topics = {
-            create: topicIds.map((topicId: string) => ({
-              topicId
-            }))
-          };
-        }
-
-        const post = await prisma.post.update({
-          where: { id },
-          data: updateData,
-          include: {
-            users: {
-              select: {
-                id: true,
-                username: true,
-                avatarUrl: true,
-                reputation: true,
-                isVerified: true
-              }
-            },
-            post_topics: {
-              include: {
-                topics: true
-              }
-            },
-            _count: {
-              select: {
-                comments: true
-              }
-            }
-          }
-        });
-
-        // Get vote data
-        const votes = await prisma.vote.findMany({
-          where: {
-            votableId: id,
-            votableType: 'post'
-          }
-        });
-
-        const bookmarks = context.user ? await prisma.bookmark.findMany({
-          where: { postId: id }
-        }) : [];
-
-        const result = {
-          ...post,
-          author: post.users,
-          topics: post.post_topics.map((pt: any) => pt.topics),
-          voteCount: calculateVoteCount(votes),
-          userVote: context.user ? getUserVote(votes, context.user.userId) : null,
-          bookmarked: context.user ? isPostBookmarked(bookmarks, context.user.userId) : false,
-          commentCount: post._count.comments
-        };
-
-        // Publish post updated event
-        publishPostUpdated(result);
-
-        logger.info('Post updated', {
-          postId: id,
-          userId: context.user.userId
-        });
-
-        return result;
-
-      } catch (error) {
-        logger.error('Error updating post:', error);
         throw error;
       }
     },
@@ -782,7 +461,6 @@ export const postResolvers = {
       }
 
       try {
-        // Check if post exists and user is author
         const post = await prisma.post.findUnique({
           where: { id }
         });
@@ -795,7 +473,6 @@ export const postResolvers = {
           throw new AuthorizationError('You can only delete your own posts');
         }
 
-        // Soft delete (set deletedAt timestamp)
         await prisma.post.update({
           where: { id },
           data: { deletedAt: new Date() }
@@ -826,20 +503,6 @@ export const postResolvers = {
     },
 
     /**
-     * Resolve topics field
-     */
-    topics: async (parent: any, args: any, context: GraphQLContext) => {
-      if (parent.topics) return parent.topics;
-
-      const postTopics = await prisma.postTopic.findMany({
-        where: { postId: parent.id },
-        include: { topics: true }
-      });
-
-      return postTopics.map((pt: any) => pt.topics);
-    },
-
-    /**
      * Resolve comments field with pagination
      */
     comments: async (
@@ -863,7 +526,6 @@ export const postResolvers = {
         where.createdAt = { lt: cursor };
       }
 
-      // Use valid orderBy - createdAt or views-based ordering
       const orderByClause: any = orderBy === 'OLDEST' 
         ? { createdAt: 'asc' as const }
         : { createdAt: 'desc' as const };

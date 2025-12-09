@@ -1,4 +1,3 @@
-import { PrismaClient } from '@prisma/client';
 import { logger } from '../../config/logger';
 
 export interface PaginationArgs {
@@ -15,48 +14,6 @@ export interface PaginatedResult<T> {
     endCursor: string | null;
   };
   totalCount: number;
-}
-
-// Cursor-based pagination helper
-export function createCursor(cursorData: any): string {
-  return Buffer.from(JSON.stringify(cursorData)).toString('base64');
-}
-
-export function parseCursor(cursor: string): any {
-  try {
-    return JSON.parse(Buffer.from(cursor, 'base64').toString());
-  } catch (error) {
-    logger.warn('Invalid cursor:', cursor);
-    return null;
-  }
-}
-
-// Generic pagination function
-export async function paginateResults<T>(
-  items: T[],
-  totalCount: number,
-  first: number = 10,
-  after?: string | null,
-  getId: (item: T) => string = (item: any) => item.id
-): Promise<PaginatedResult<T>> {
-  const startIndex = after ? items.findIndex(item => getId(item) === after) + 1 : 0;
-  const endIndex = Math.min(startIndex + first, items.length);
-  
-  const paginatedItems = items.slice(startIndex, endIndex);
-  
-  return {
-    edges: paginatedItems.map(item => ({
-      node: item,
-      cursor: createCursor({ id: getId(item) })
-    })),
-    pageInfo: {
-      hasNextPage: endIndex < items.length,
-      hasPreviousPage: startIndex > 0,
-      startCursor: paginatedItems.length > 0 ? createCursor({ id: getId(paginatedItems[0]) }) : null,
-      endCursor: paginatedItems.length > 0 ? createCursor({ id: getId(paginatedItems[paginatedItems.length - 1]) }) : null
-    },
-    totalCount
-  };
 }
 
 // Vote count calculation
@@ -81,22 +38,6 @@ export function isPostBookmarked(
   userId: string
 ): boolean {
   return bookmarks.some(bookmark => bookmark.userId === userId);
-}
-
-// Check if user is subscribed to a topic
-export function isTopicSubscribed(
-  subscriptions: Array<{ userId: string }>,
-  userId: string
-): boolean {
-  return subscriptions.some(subscription => subscription.userId === userId);
-}
-
-// Generate topic slug from name
-export function generateSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
 }
 
 // Input validation helpers
@@ -155,4 +96,3 @@ export class ConflictError extends GraphQLError {
     super(message, 'CONFLICT', 409);
   }
 }
-

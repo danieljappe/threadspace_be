@@ -5,12 +5,9 @@ import { userResolvers } from './userResolvers';
 import { authResolvers } from './authResolvers';
 import { postResolvers } from './postResolvers';
 import { commentResolvers } from './commentResolvers';
-import { topicResolvers } from './topicResolvers';
 import { voteResolvers, bookmarkResolvers } from './voteResolvers';
 import { fieldResolvers } from './fieldResolvers';
 import { subscriptionResolvers } from './subscriptionResolvers';
-import { typingResolvers } from './typingResolvers';
-import { notificationResolvers } from './notificationResolvers';
 
 // Health check resolver
 export const healthResolver = {
@@ -65,20 +62,13 @@ export const resolvers = {
     ...userResolvers.Query,
     ...postResolvers.Query,
     ...commentResolvers.Query,
-    ...topicResolvers.Query,
-    ...typingResolvers.Query,
-    ...notificationResolvers.Query,
   },
   Mutation: {
     ...authResolvers.Mutation,
-    ...userResolvers.Mutation,
     ...postResolvers.Mutation,
     ...commentResolvers.Mutation,
-    ...topicResolvers.Mutation,
     ...voteResolvers.Mutation,
     ...bookmarkResolvers.Mutation,
-    ...typingResolvers.Mutation,
-    ...notificationResolvers.Mutation,
   },
   Subscription: {
     ...subscriptionResolvers.Subscription,

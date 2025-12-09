@@ -5,7 +5,6 @@ import {
   validateEmail, 
   validateUsername, 
   validatePassword,
-  generateSlug,
   ValidationError,
   AuthenticationError,
   ConflictError
@@ -21,18 +20,17 @@ export interface GraphQLContext {
     isAdmin?: boolean;
   };
   dataLoaders: DataLoaderContext;
-  res?: any; // Response object for setting cookies
+  res?: any;
 }
 
 export const authResolvers = {
   Mutation: {
     register: async (
       parent: any, 
-      { input }: { input: { username: string; email: string; password: string; bio?: string } },
+      { input }: { input: { username: string; email: string; password: string } },
       context: GraphQLContext
     ) => {
       try {
-        // Validate input
         if (!validateEmail(input.email)) {
           throw new ValidationError('Invalid email format');
         }
@@ -45,7 +43,6 @@ export const authResolvers = {
           throw new ValidationError('Password must be at least 8 characters long');
         }
 
-        // Check if user already exists
         const existingUser = await prisma.user.findFirst({
           where: {
             OR: [
@@ -64,30 +61,24 @@ export const authResolvers = {
           }
         }
 
-        // Hash password
         const passwordHash = await bcrypt.hash(input.password, 12);
 
-        // Create user
         const user = await prisma.user.create({
           data: {
             username: input.username,
             email: input.email,
-            passwordHash,
-            bio: input.bio
+            passwordHash
           }
         });
 
-        // Generate tokens
         const { accessToken, refreshToken } = AuthService.generateTokens(
           user.id,
           user.username,
           user.email
         );
 
-        // Store refresh token in database
         await AuthService.storeTokens(accessToken, refreshToken, user.id);
 
-        // Set auth cookies
         if (context.res) {
           AuthService.setAuthCookies(context.res, accessToken, refreshToken);
         }
@@ -103,11 +94,8 @@ export const authResolvers = {
             avatarUrl: user.avatarUrl,
             reputation: user.reputation,
             isVerified: user.isVerified,
-            isAdmin: user.isAdmin,
             createdAt: user.createdAt,
-            updatedAt: user.updatedAt,
-            lastLogin: user.lastLogin,
-            isActive: user.isActive
+            updatedAt: user.updatedAt
           },
           accessToken,
           refreshToken
@@ -124,7 +112,6 @@ export const authResolvers = {
       context: GraphQLContext
     ) => {
       try {
-        // Find user by email
         const user = await prisma.user.findUnique({
           where: { email: input.email }
         });
@@ -137,29 +124,24 @@ export const authResolvers = {
           throw new AuthenticationError('Account is deactivated');
         }
 
-        // Verify password
         const isPasswordValid = await bcrypt.compare(input.password, user.passwordHash);
         if (!isPasswordValid) {
           throw new AuthenticationError('Invalid credentials');
         }
 
-        // Update last login
         await prisma.user.update({
           where: { id: user.id },
           data: { lastLogin: new Date() }
         });
 
-        // Generate tokens
         const { accessToken, refreshToken } = AuthService.generateTokens(
           user.id,
           user.username,
           user.email
         );
 
-        // Store refresh token in database
         await AuthService.storeTokens(accessToken, refreshToken, user.id);
 
-        // Set auth cookies
         if (context.res) {
           AuthService.setAuthCookies(context.res, accessToken, refreshToken);
         }
@@ -175,11 +157,8 @@ export const authResolvers = {
             avatarUrl: user.avatarUrl,
             reputation: user.reputation,
             isVerified: user.isVerified,
-            isAdmin: user.isAdmin,
             createdAt: user.createdAt,
-            updatedAt: user.updatedAt,
-            lastLogin: user.lastLogin,
-            isActive: user.isActive
+            updatedAt: user.updatedAt
           },
           accessToken,
           refreshToken
@@ -193,15 +172,11 @@ export const authResolvers = {
     logout: async (parent: any, args: any, context: GraphQLContext) => {
       try {
         if (context.user) {
-          // In a real implementation, you would revoke the refresh token here
-          // For now, we'll just clear the cookies
           if (context.res) {
             AuthService.clearAuthCookies(context.res);
           }
-
           logger.info('User logged out:', { userId: context.user.userId });
         }
-
         return true;
       } catch (error) {
         logger.error('Logout error:', error);
@@ -211,8 +186,6 @@ export const authResolvers = {
 
     refreshToken: async (parent: any, args: any, context: GraphQLContext) => {
       try {
-        // In a real implementation, you would get the refresh token from cookies or headers
-        // For now, we'll return an error as this requires proper token handling
         throw new AuthenticationError('Refresh token not implemented in GraphQL context');
       } catch (error) {
         logger.error('Refresh token error:', error);
@@ -221,4 +194,3 @@ export const authResolvers = {
     }
   }
 };
-

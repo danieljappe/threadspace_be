@@ -6,8 +6,7 @@ import {
   ValidationError,
   AuthenticationError,
   NotFoundError,
-  AuthorizationError,
-  paginateResults
+  AuthorizationError
 } from './utils';
 import { DataLoaderContext } from './dataloaders';
 import { publishCommentAdded, publishCommentDeleted } from './subscriptionResolvers';
@@ -87,8 +86,6 @@ export const commentResolvers = {
             orderByClause = { createdAt: 'asc' };
             break;
           case 'TOP':
-            // For top comments, we'll order by depth first (to show top-level comments first)
-            // then by creation time
             orderByClause = [{ depth: 'asc' }, { createdAt: 'desc' }];
             break;
           default: // NEWEST
@@ -105,8 +102,8 @@ export const commentResolvers = {
             posts: true,
             comments: true
           },
-          take: first + 1, // Take one extra to determine hasNextPage
-          skip: after ? 1 : 0, // Skip the cursor item
+          take: first + 1,
+          skip: after ? 1 : 0,
           cursor: after ? { id: after } : undefined,
           orderBy: orderByClause
         });
@@ -195,11 +192,10 @@ export const commentResolvers = {
         }
 
         // Verify parent comment exists if provided
-        let parentComment = null;
         let depth = 0;
 
         if (input.parentId) {
-          parentComment = await context.dataLoaders.commentLoader.load(input.parentId);
+          const parentComment = await context.dataLoaders.commentLoader.load(input.parentId);
           if (!parentComment) {
             throw new NotFoundError('Parent comment not found');
           }
@@ -218,7 +214,7 @@ export const commentResolvers = {
         // Temporarily disable the ltree trigger to avoid syntax errors
         await prisma.$executeRaw`DROP TRIGGER IF EXISTS update_comment_path_trigger ON comments;`;
         
-        // Create comment using Prisma's create method
+        // Create comment
         const comment = await prisma.comment.create({
           data: {
             postId: input.postId,
@@ -235,7 +231,7 @@ export const commentResolvers = {
         });
 
         if (!comment) {
-          throw new Error('Failed to create comment - comment not found after creation');
+          throw new Error('Failed to create comment');
         }
 
         logger.info('Comment created successfully:', { 
@@ -247,7 +243,7 @@ export const commentResolvers = {
         // Publish real-time event
         publishCommentAdded({
           ...comment,
-          postId: input.postId // Add postId directly for easier subscription filtering
+          postId: input.postId
         });
 
         return {
@@ -269,73 +265,6 @@ export const commentResolvers = {
       }
     },
 
-    updateComment: async (
-      parent: any,
-      { id, content }: { id: string; content: string },
-      context: GraphQLContext
-    ) => {
-      if (!context.user) {
-        throw new AuthenticationError();
-      }
-
-      try {
-        // Validate input
-        if (!content.trim()) {
-          throw new ValidationError('Content is required');
-        }
-
-        if (content.length > 10000) {
-          throw new ValidationError('Content must be less than 10,000 characters');
-        }
-
-        // Check if comment exists and user owns it
-        const existingComment = await context.dataLoaders.commentLoader.load(id);
-        if (!existingComment) {
-          throw new NotFoundError('Comment not found');
-        }
-
-        if (existingComment.authorId !== context.user.userId && !context.user.isAdmin) {
-          throw new AuthorizationError('You can only edit your own comments');
-        }
-
-        // Update comment
-        const comment = await prisma.comment.update({
-          where: { id },
-          data: {
-            content: content.trim(),
-            isEdited: true
-          },
-          include: {
-            users: true,
-            posts: true,
-            comments: true
-          }
-        });
-
-        // Clear comment cache
-        context.dataLoaders.commentLoader.clear(id);
-
-        logger.info('Comment updated successfully:', { commentId: id, authorId: context.user.userId });
-
-        return {
-          id: comment.id,
-          content: comment.content,
-          depth: comment.depth,
-          isEdited: comment.isEdited,
-          createdAt: comment.createdAt,
-          updatedAt: comment.updatedAt,
-          post: (comment as any).posts,
-          parent: (comment as any).comments,
-          author: (comment as any).users,
-          voteCount: 0, // Will be calculated by field resolver
-          userVote: null // Will be calculated by field resolver
-        };
-      } catch (error) {
-        logger.error('Error updating comment:', error);
-        throw error;
-      }
-    },
-
     deleteComment: async (
       parent: any,
       { id }: { id: string },
@@ -346,7 +275,6 @@ export const commentResolvers = {
       }
 
       try {
-        // Check if comment exists and user owns it
         const existingComment = await context.dataLoaders.commentLoader.load(id);
         if (!existingComment) {
           throw new NotFoundError('Comment not found');
@@ -356,7 +284,6 @@ export const commentResolvers = {
           throw new AuthorizationError('You can only delete your own comments');
         }
 
-        // Get postId and parentId before deleting (for publishing event)
         const postId = existingComment.postId;
         const parentId = existingComment.parentId;
 
@@ -388,4 +315,3 @@ export const commentResolvers = {
     }
   }
 };
-

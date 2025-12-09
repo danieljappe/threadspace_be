@@ -31,17 +31,14 @@ export const voteResolvers = {
       }
 
       try {
-        // Validate target type
         if (!['POST', 'COMMENT'].includes(targetType)) {
           throw new ValidationError('Invalid target type');
         }
 
-        // Validate vote type
         if (!['UPVOTE', 'DOWNVOTE'].includes(voteType)) {
           throw new ValidationError('Invalid vote type');
         }
 
-        // Check if target exists and get postId for comments
         let commentPostId: string | undefined;
         if (targetType === 'POST') {
           const post = await context.dataLoaders.postLoader.load(targetId);
@@ -56,20 +53,16 @@ export const voteResolvers = {
           commentPostId = comment.postId || undefined;
         }
 
-        // Convert targetType to database enum value
         const dbTargetType = targetType.toLowerCase() as 'post' | 'comment';
 
-        // Check if user already voted
         const existingVote = await context.dataLoaders.voteLoader.load({
           userId: context.user.userId,
           votableId: targetId,
           votableType: dbTargetType
         });
 
-        let newVote;
         if (existingVote) {
-          // Update existing vote
-          newVote = await prisma.vote.update({
+          await prisma.vote.update({
             where: {
               userId_votableId_votableType: {
                 userId: context.user.userId,
@@ -80,18 +73,16 @@ export const voteResolvers = {
             data: { voteType }
           });
         } else {
-        // Create new vote
-        newVote = await prisma.vote.create({
-          data: {
-            userId: context.user.userId,
-            votableId: targetId,
-            votableType: dbTargetType,
-            voteType
-          }
-        });
+          await prisma.vote.create({
+            data: {
+              userId: context.user.userId,
+              votableId: targetId,
+              votableType: dbTargetType,
+              voteType
+            }
+          });
         }
 
-        // Get all votes for this target to calculate total
         const allVotes = await prisma.vote.findMany({
           where: {
             votableId: targetId,
@@ -99,7 +90,6 @@ export const voteResolvers = {
           }
         });
 
-        // Clear vote cache
         context.dataLoaders.voteLoader.clear({
           userId: context.user.userId,
           votableId: targetId,
@@ -113,26 +103,18 @@ export const voteResolvers = {
           userId: context.user.userId 
         });
 
-        // Publish real-time vote update
         const voteCount = calculateVoteCount(allVotes);
-        console.log('[VoteResolver] Publishing vote update:', {
+        publishVoteUpdated({
           targetId,
           targetType: dbTargetType,
           voteCount,
           userVote: voteType,
           commentPostId
         });
-        publishVoteUpdated({
-          targetId,
-          targetType: dbTargetType,
-          voteCount,
-          userVote: voteType,
-          commentPostId // Include postId for comment votes so SSE can filter properly
-        });
 
         return {
           success: true,
-          voteCount: calculateVoteCount(allVotes),
+          voteCount,
           userVote: voteType
         };
       } catch (error) {
@@ -151,15 +133,12 @@ export const voteResolvers = {
       }
 
       try {
-        // Validate target type
         if (!['POST', 'COMMENT'].includes(targetType)) {
           throw new ValidationError('Invalid target type');
         }
 
-        // Convert targetType to database enum value
         const dbTargetType = targetType.toLowerCase() as 'post' | 'comment';
 
-        // Check if vote exists
         const existingVote = await context.dataLoaders.voteLoader.load({
           userId: context.user.userId,
           votableId: targetId,
@@ -170,7 +149,6 @@ export const voteResolvers = {
           throw new NotFoundError('Vote not found');
         }
 
-        // Remove vote
         await prisma.vote.delete({
           where: {
             userId_votableId_votableType: {
@@ -181,7 +159,6 @@ export const voteResolvers = {
           }
         });
 
-        // Clear vote cache
         context.dataLoaders.voteLoader.clear({
           userId: context.user.userId,
           votableId: targetId,
@@ -194,14 +171,12 @@ export const voteResolvers = {
           userId: context.user.userId 
         });
 
-        // Get postId for comment votes before removing
         let commentPostId: string | undefined;
         if (targetType === 'COMMENT') {
           const comment = await context.dataLoaders.commentLoader.load(targetId);
           commentPostId = comment?.postId || undefined;
         }
 
-        // Get updated vote count after removal
         const remainingVotes = await prisma.vote.findMany({
           where: {
             votableId: targetId,
@@ -209,21 +184,13 @@ export const voteResolvers = {
           }
         });
 
-        // Publish real-time vote update
         const voteCount = calculateVoteCount(remainingVotes);
-        console.log('[VoteResolver] Publishing vote removal update:', {
-          targetId,
-          targetType: dbTargetType,
-          voteCount,
-          userVote: null,
-          commentPostId
-        });
         publishVoteUpdated({
           targetId,
           targetType: dbTargetType,
           voteCount,
           userVote: null,
-          commentPostId // Include postId for comment votes
+          commentPostId
         });
 
         return true;
@@ -247,13 +214,11 @@ export const bookmarkResolvers = {
       }
 
       try {
-        // Check if post exists
         const post = await context.dataLoaders.postLoader.load(postId);
         if (!post) {
           throw new NotFoundError('Post not found');
         }
 
-        // Check if already bookmarked
         const existingBookmark = await context.dataLoaders.bookmarkLoader.load({
           userId: context.user.userId,
           postId
@@ -263,7 +228,6 @@ export const bookmarkResolvers = {
           throw new ValidationError('Post already bookmarked');
         }
 
-        // Create bookmark
         await prisma.bookmark.create({
           data: {
             userId: context.user.userId,
@@ -271,7 +235,6 @@ export const bookmarkResolvers = {
           }
         });
 
-        // Clear bookmark cache
         context.dataLoaders.bookmarkLoader.clear({
           userId: context.user.userId,
           postId
@@ -279,21 +242,15 @@ export const bookmarkResolvers = {
 
         logger.info('Post bookmarked:', { postId, userId: context.user.userId });
 
-        // Return the post with updated bookmark status
         return {
           id: post.id,
           title: post.title,
           content: post.content,
-          threadType: post.threadType,
-          views: post.views,
-          isPinned: post.isPinned,
-          isLocked: post.isLocked,
           createdAt: post.createdAt,
           updatedAt: post.updatedAt,
           author: post.author,
-          topics: [],
-          voteCount: 0, // Will be calculated by field resolver
-          userVote: null, // Will be calculated by field resolver
+          voteCount: 0,
+          userVote: null,
           bookmarked: true
         };
       } catch (error) {
@@ -312,19 +269,16 @@ export const bookmarkResolvers = {
       }
 
       try {
-        // Check if bookmark exists
         const existingBookmark = await context.dataLoaders.bookmarkLoader.load({
           userId: context.user.userId,
           postId
         });
 
         if (!existingBookmark) {
-          // Bookmark doesn't exist, return success (idempotent operation)
           logger.info('Bookmark not found, returning success:', { postId, userId: context.user.userId });
           return true;
         }
 
-        // Remove bookmark
         await prisma.bookmark.delete({
           where: {
             userId_postId: {
@@ -334,7 +288,6 @@ export const bookmarkResolvers = {
           }
         });
 
-        // Clear bookmark cache
         context.dataLoaders.bookmarkLoader.clear({
           userId: context.user.userId,
           postId
@@ -350,4 +303,3 @@ export const bookmarkResolvers = {
     }
   }
 };
-
