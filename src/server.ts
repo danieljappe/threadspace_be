@@ -345,8 +345,6 @@ async function startServer() {
           async serverWillStart() {
             return {
               async drainServer() {
-                // Cleanup when server is shutting down
-                // PubSub doesn't have a close method in this version
               },
             };
           },
@@ -379,7 +377,6 @@ async function startServer() {
     const httpServer = createServer(app);
 
     // Note: Real-time updates are handled via SSE (Server-Sent Events) at /api/posts/:postId/events
-    // WebSocket subscriptions have been removed in favor of SSE for simpler deployment
 
     // Start server
     await new Promise<void>((resolve) => {

@@ -211,9 +211,6 @@ export const commentResolvers = {
           }
         }
 
-        // Temporarily disable the ltree trigger to avoid syntax errors
-        await prisma.$executeRaw`DROP TRIGGER IF EXISTS update_comment_path_trigger ON comments;`;
-        
         // Create comment
         const comment = await prisma.comment.create({
           data: {
@@ -261,6 +258,91 @@ export const commentResolvers = {
         };
       } catch (error) {
         logger.error('Error creating comment:', error);
+        throw error;
+      }
+    },
+
+    editComment: async (
+      parent: any,
+      { input }: { input: { id: string; content: string } },
+      context: GraphQLContext
+    ) => {
+      if (!context.user) {
+        throw new AuthenticationError('You must be logged in to edit a comment');
+      }
+
+      try {
+        const { id, content } = input;
+
+        // Validate input
+        if (!content || content.trim().length === 0) {
+          throw new ValidationError('Content is required');
+        }
+
+        if (content.length > 10000) {
+          throw new ValidationError('Content must be less than 10,000 characters');
+        }
+
+        // Find the comment
+        const existingComment = await context.dataLoaders.commentLoader.load(id);
+        if (!existingComment) {
+          throw new NotFoundError('Comment not found');
+        }
+
+        if (existingComment.deletedAt) {
+          throw new NotFoundError('Comment not found');
+        }
+
+        // Check authorization - only owner can edit
+        if (existingComment.authorId !== context.user.userId && !context.user.isAdmin) {
+          throw new AuthorizationError('You can only edit your own comments');
+        }
+
+        // Update the comment and set isEdited to true
+        const updatedComment = await prisma.comment.update({
+          where: { id },
+          data: {
+            content: content.trim(),
+            isEdited: true
+          },
+          include: {
+            users: true,
+            posts: true,
+            comments: true
+          }
+        });
+
+        // Clear comment cache
+        context.dataLoaders.commentLoader.clear(id);
+
+        // Get votes for this comment
+        const votes = await prisma.vote.findMany({
+          where: {
+            votableId: id,
+            votableType: 'comment'
+          }
+        });
+
+        logger.info('Comment edited successfully:', { 
+          commentId: id, 
+          authorId: context.user.userId 
+        });
+
+        return {
+          id: updatedComment.id,
+          content: updatedComment.content,
+          depth: updatedComment.depth,
+          isEdited: updatedComment.isEdited,
+          createdAt: updatedComment.createdAt,
+          updatedAt: updatedComment.updatedAt,
+          post: (updatedComment as any).posts,
+          parent: (updatedComment as any).comments,
+          author: (updatedComment as any).users,
+          voteCount: calculateVoteCount(votes),
+          userVote: context.user ? getUserVote(votes, context.user.userId) : null
+        };
+      } catch (error) {
+        logger.error('Error editing comment:', error);
         throw error;
       }
     },

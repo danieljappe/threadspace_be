@@ -86,12 +86,24 @@ export const postResolvers = {
         // Validate and limit pagination size (max 50)
         const limit = Math.min(Math.max(first || 10, 1), 50);
 
-        // Parse cursor (ISO timestamp)
-        let cursor: Date | null = null;
+        // Parse cursor (format: "timestamp|id" or just "timestamp" for backward compatibility)
+        let cursorTime: Date | null = null;
+        let cursorId: string | null = null;
         if (after) {
-          cursor = new Date(after);
-          if (isNaN(cursor.getTime())) {
-            throw new ValidationError('Invalid cursor format. Expected ISO timestamp.');
+          if (after.includes('|')) {
+            // Compound cursor: timestamp|id
+            const [timestamp, id] = after.split('|');
+            cursorTime = new Date(timestamp);
+            cursorId = id;
+            if (isNaN(cursorTime.getTime())) {
+              throw new ValidationError('Invalid cursor format. Expected ISO timestamp|id.');
+            }
+          } else {
+            // Legacy cursor: just timestamp (for backward compatibility)
+            cursorTime = new Date(after);
+            if (isNaN(cursorTime.getTime())) {
+              throw new ValidationError('Invalid cursor format. Expected ISO timestamp.');
+            }
           }
         }
 
@@ -101,23 +113,44 @@ export const postResolvers = {
         };
 
         // Add cursor condition for pagination
-        if (cursor) {
-          where.createdAt = { lt: cursor };
+        if (cursorTime) {
+          if (cursorId) {
+            // Compound cursor: (createdAt < cursorTime) OR (createdAt = cursorTime AND id < cursorId)
+            where.AND = [
+              { deletedAt: null },
+              {
+                OR: [
+                  { createdAt: { lt: cursorTime } },
+                  {
+                    AND: [
+                      { createdAt: cursorTime },
+                      { id: { lt: cursorId } }
+                    ]
+                  }
+                ]
+              }
+            ];
+            // Remove the top-level deletedAt since it's now in AND
+            delete where.deletedAt;
+          } else {
+            // Legacy cursor: just timestamp
+            where.createdAt = { lt: cursorTime };
+          }
         }
 
-        // Build ORDER BY clause
-        let orderByClause: any = { createdAt: 'desc' };
+        // Build ORDER BY clause (add ID as secondary sort for deterministic ordering)
+        let orderByClause: any[] = [];
         
         switch (orderBy) {
           case 'OLDEST':
-            orderByClause = { createdAt: 'asc' };
+            orderByClause = [{ createdAt: 'asc' }, { id: 'asc' }];
             break;
           case 'TOP':
-            orderByClause = { views: 'desc' };
+            orderByClause = [{ views: 'desc' }, { id: 'desc' }];
             break;
           case 'NEWEST':
           default:
-            orderByClause = { createdAt: 'desc' };
+            orderByClause = [{ createdAt: 'desc' }, { id: 'desc' }];
         }
 
         // Fetch posts (fetch one extra to determine hasNextPage)
@@ -187,7 +220,7 @@ export const postResolvers = {
               bookmarked: context.user ? isPostBookmarked(allBookmarks, context.user.userId) : false,
               commentCount: post._count.comments
             },
-            cursor: post.createdAt?.toISOString() ?? new Date().toISOString()
+            cursor: `${post.createdAt?.toISOString() ?? new Date().toISOString()}|${post.id}`
           };
         });
 
@@ -444,6 +477,128 @@ export const postResolvers = {
 
       } catch (error) {
         logger.error('Error creating post:', error);
+        throw error;
+      }
+    },
+
+    /**
+     * Edit a post (only owner can edit)
+     */
+    editPost: async (
+      parent: any,
+      { input }: { input: { id: string; title?: string; content?: string } },
+      context: GraphQLContext
+    ) => {
+      if (!context.user) {
+        throw new AuthenticationError('You must be logged in to edit a post');
+      }
+
+      try {
+        const { id, title, content } = input;
+
+        // Validate that at least one field is provided
+        if (!title && !content) {
+          throw new ValidationError('At least one field (title or content) must be provided');
+        }
+
+        // Find the post
+        const post = await prisma.post.findUnique({
+          where: { id },
+          include: {
+            users: {
+              select: {
+                id: true,
+                username: true,
+                avatarUrl: true,
+                reputation: true,
+                isVerified: true
+              }
+            }
+          }
+        });
+
+        if (!post) {
+          throw new NotFoundError('Post not found');
+        }
+
+        if (post.deletedAt) {
+          throw new NotFoundError('Post not found');
+        }
+
+        // Check authorization - only owner can edit
+        if (post.authorId !== context.user.userId && !context.user.isAdmin) {
+          throw new AuthorizationError('You can only edit your own posts');
+        }
+
+        // Validate input
+        const updateData: any = {};
+        
+        if (title !== undefined) {
+          if (!title || title.trim().length === 0) {
+            throw new ValidationError('Post title cannot be empty');
+          }
+          if (title.length > 300) {
+            throw new ValidationError('Post title must be less than 300 characters');
+          }
+          updateData.title = title.trim();
+        }
+
+        if (content !== undefined) {
+          if (!content || content.trim().length === 0) {
+            throw new ValidationError('Post content cannot be empty');
+          }
+          updateData.content = content.trim();
+        }
+
+        // Update the post
+        const updatedPost = await prisma.post.update({
+          where: { id },
+          data: updateData,
+          include: {
+            users: {
+              select: {
+                id: true,
+                username: true,
+                avatarUrl: true,
+                reputation: true,
+                isVerified: true
+              }
+            }
+          }
+        });
+
+        // Get votes for this post
+        const votes = await prisma.vote.findMany({
+          where: {
+            votableId: id,
+            votableType: 'post'
+          }
+        });
+
+        // Get bookmarks for this post
+        const bookmarks = context.user ? await prisma.bookmark.findMany({
+          where: { postId: id }
+        }) : [];
+
+        logger.info('Post edited', {
+          postId: id,
+          userId: context.user.userId
+        });
+
+        return {
+          id: updatedPost.id,
+          title: updatedPost.title,
+          content: updatedPost.content,
+          createdAt: updatedPost.createdAt,
+          updatedAt: updatedPost.updatedAt,
+          author: updatedPost.users,
+          voteCount: calculateVoteCount(votes),
+          userVote: context.user ? getUserVote(votes, context.user.userId) : null,
+          bookmarked: context.user ? isPostBookmarked(bookmarks, context.user.userId) : false
+        };
+
+      } catch (error) {
+        logger.error('Error editing post:', error);
         throw error;
       }
     },

@@ -159,47 +159,6 @@ CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
 CREATE INDEX idx_posts_search ON posts USING GIN(to_tsvector('english', title || ' ' || content));
 CREATE INDEX idx_comments_search ON comments USING GIN(to_tsvector('english', content));
 
--- VIEWS
--- Trending posts view
-CREATE OR REPLACE VIEW trending_posts AS
-SELECT 
-    p.*,
-    u.username,
-    u.avatar_url,
-    COUNT(DISTINCT c.id) as comment_count,
-            COALESCE(SUM(CASE WHEN v.vote_type = 'UPVOTE' THEN 1 WHEN v.vote_type = 'DOWNVOTE' THEN -1 ELSE 0 END), 0) as vote_score,
-    (p.views * 0.3 + 
-     COUNT(DISTINCT c.id) * 2 + 
-     COALESCE(SUM(CASE WHEN v.vote_type = 'UPVOTE' THEN 1 WHEN v.vote_type = 'DOWNVOTE' THEN -1 ELSE 0 END), 0) * 1.5 +
-     CASE WHEN p.created_at > NOW() - INTERVAL '24 hours' THEN 10 ELSE 0 END
-    ) as trending_score
-FROM posts p
-LEFT JOIN users u ON p.author_id = u.id
-LEFT JOIN comments c ON p.id = c.post_id
-LEFT JOIN votes v ON p.id = v.votable_id AND v.votable_type = 'post'
-WHERE p.created_at > NOW() - INTERVAL '7 days'
-  AND p.deleted_at IS NULL
-GROUP BY p.id, u.username, u.avatar_url
-ORDER BY trending_score DESC;
-
--- User statistics view
-CREATE OR REPLACE VIEW user_statistics AS
-SELECT 
-    u.id,
-    u.username,
-    COUNT(DISTINCT p.id) as post_count,
-    COUNT(DISTINCT c.id) as comment_count,
-    COUNT(DISTINCT f1.follower_id) as follower_count,
-    COUNT(DISTINCT f2.following_id) as following_count,
-    u.reputation,
-    u.created_at
-FROM users u
-LEFT JOIN posts p ON u.id = p.author_id
-LEFT JOIN comments c ON u.id = c.author_id
-LEFT JOIN follows f1 ON u.id = f1.following_id
-LEFT JOIN follows f2 ON u.id = f2.follower_id
-GROUP BY u.id;
-
 -- STORED PROCEDURES
 -- Update user reputation
 CREATE OR REPLACE FUNCTION update_user_reputation()
@@ -252,26 +211,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Update comment path for hierarchical queries
-CREATE OR REPLACE FUNCTION update_comment_path()
-RETURNS TRIGGER AS $$
-DECLARE
-    parent_path LTREE;
-BEGIN
-    IF NEW.parent_id IS NULL THEN
-        NEW.path = NEW.id::text::ltree;
-        NEW.depth = 0;
-    ELSE
-        SELECT path, depth + 1 INTO parent_path, NEW.depth
-        FROM comments
-        WHERE id = NEW.parent_id;
-        
-        NEW.path = parent_path || NEW.id::text::ltree;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 -- Audit log function
 CREATE OR REPLACE FUNCTION audit_trigger()
 RETURNS TRIGGER AS $$
@@ -292,22 +231,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Clean expired sessions
-CREATE OR REPLACE FUNCTION clean_expired_sessions()
-RETURNS void AS $$
-BEGIN
-    DELETE FROM sessions WHERE expires_at < NOW();
-END;
-$$ LANGUAGE plpgsql;
-
 -- TRIGGERS
 CREATE TRIGGER update_reputation_trigger
 AFTER INSERT OR UPDATE OR DELETE ON votes
 FOR EACH ROW EXECUTE FUNCTION update_user_reputation();
-
-CREATE TRIGGER update_comment_path_trigger
-BEFORE INSERT ON comments
-FOR EACH ROW EXECUTE FUNCTION update_comment_path();
 
 CREATE TRIGGER audit_users_trigger
 AFTER INSERT OR UPDATE OR DELETE ON users
@@ -331,53 +258,6 @@ FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 CREATE TRIGGER update_posts_updated_at BEFORE UPDATE ON posts
 FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-
--- STORED PROCEDURES for transactions
-CREATE OR REPLACE PROCEDURE create_post_with_topics(
-    p_author_id UUID,
-    p_title VARCHAR(300),
-    p_content TEXT,
-    p_thread_type thread_type,
-    p_topic_ids UUID[]
-)
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_post_id UUID;
-    v_topic_id UUID;
-BEGIN
-    -- Start transaction
-    INSERT INTO posts (author_id, title, content, thread_type)
-    VALUES (p_author_id, p_title, p_content, p_thread_type)
-    RETURNING id INTO v_post_id;
-    
-    -- Add topics
-    FOREACH v_topic_id IN ARRAY p_topic_ids
-    LOOP
-        INSERT INTO post_topics (post_id, topic_id)
-        VALUES (v_post_id, v_topic_id);
-    END LOOP;
-    
-    -- Create notification for followers
-    INSERT INTO notifications (user_id, type, data)
-    SELECT 
-        follower_id,
-        'post'::notification_type,
-        jsonb_build_object(
-            'post_id', v_post_id,
-            'author_id', p_author_id,
-            'title', p_title
-        )
-    FROM follows
-    WHERE following_id = p_author_id;
-    
-    COMMIT;
-EXCEPTION
-    WHEN OTHERS THEN
-        ROLLBACK;
-        RAISE;
-END;
-$$;
 
 -- Create database users with proper privileges
 CREATE USER threadspace_app WITH PASSWORD 'app_password';

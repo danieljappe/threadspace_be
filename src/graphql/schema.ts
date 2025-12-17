@@ -123,6 +123,17 @@ export const typeDefs = gql`
     content: String!
   }
 
+  input UpdatePostInput {
+    id: ID!
+    title: String
+    content: String
+  }
+
+  input UpdateCommentInput {
+    id: ID!
+    content: String!
+  }
+
   type Query {
     # Health check
     health: String!
@@ -153,10 +164,12 @@ export const typeDefs = gql`
     
     # Post mutations
     createPost(input: CreatePostInput!): Post!
+    editPost(input: UpdatePostInput!): Post!
     deletePost(id: ID!): Boolean!
     
     # Comment mutations
     createComment(input: CreateCommentInput!): Comment!
+    editComment(input: UpdateCommentInput!): Comment!
     deleteComment(id: ID!): Boolean!
     
     # Voting
